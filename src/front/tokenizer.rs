@@ -127,12 +127,16 @@ impl<'a> Tokenizer<'a> {
         };
         error!(self, loc, "unrecognized token: {}", ch_str);
 
+        let begin = self.pos;
         loop {
             self.pos += 1;
-            if let Some(pair) = self.read_token() {
-                return pair;
+            let ch = self.source.get(self.pos).map(|c| *c).unwrap_or(b'\0');
+            if is_whitespace(ch) || self.read_token().is_some() {
+                break;
             }
         }
+
+        (self.pos - begin, TokenKind::Error)
     }
 
     fn scan(&mut self) -> Token {

@@ -1,18 +1,47 @@
+use bumpalo::Bump;
+
 use crate::{ast::*, *};
 
-struct Parser<'a> {
+struct Parser<'a, 'b: 'a> {
     tokens: &'a mut dyn Iterator<Item = Token>,
     token: Token,
     errors: &'a dyn Errors,
+    bump: &'b Bump,
+    temp_lists: Vec<Vec<Ast<'b>>>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(errors: &'a dyn Errors, tokens: &'a mut dyn Iterator<Item = Token>) -> Parser<'a> {
+impl<'a, 'b> Parser<'a, 'b> {
+    pub fn new(errors: &'a dyn Errors, tokens: &'a mut dyn Iterator<Item = Token>, bump: &'b Bump) -> Parser<'a, 'b> {
         Parser {
             tokens,
             token: Token::error(),
             errors,
+            bump,
+            temp_lists: Vec::new(),
         }
+    }
+
+    fn push(&self, ast: Ast<'b>) -> &'b Ast<'b> {
+        self.bump.alloc(ast)
+    }
+
+    fn push_n(&self, ast: &[Ast<'b>]) -> &'b [Ast<'b>] {
+        self.bump.alloc_slice_clone(ast)
+    }
+
+    fn begin_list(&mut self) -> Vec<Ast<'b>> {
+        match self.temp_lists.pop() {
+            Some(list) => list,
+            None => Vec::new(),
+        }
+    }
+
+    fn push_list(&mut self, list: Vec<Ast<'b>>) -> &'b [Ast<'b>] {
+        let result = self.push_n(&list);
+        let mut list = list;
+        list.clear();
+        self.temp_lists.push(list);
+        result
     }
 
     fn advance(&mut self) -> Token {
@@ -35,21 +64,23 @@ impl<'a> Parser<'a> {
         while self.accept(TokenKind::Newline).is_some() {}
     }
 
-    fn parse_atom(&mut self) -> Option<Ast> {
+    fn parse_atom(&mut self) -> Option<Ast<'b>> {
         match self.token.kind {
             TokenKind::Ident => Some(Ast::Name(self.advance())),
             _ => None,
         }
     }
 
-    fn parse_term(&mut self) -> Option<Ast> {
+    fn parse_term(&mut self) -> Option<Ast<'b>> {
         let mut lhs = self.parse_atom()?;
         loop {
             match self.token.kind {
                 TokenKind::Add => {
                     let op = self.advance();
                     let rhs = self.parse_atom()?;
-                    lhs = Ast::Binop(op, Box::new(lhs), Box::new(rhs));
+                    let l = self.push(lhs);
+                    let r = self.push(rhs);
+                    lhs = Ast::Binop(op, l, r);
                 },
                 _ => { break },
             }
@@ -57,11 +88,11 @@ impl<'a> Parser<'a> {
         Some(lhs)
     }
 
-    fn parse_expr(&mut self) -> Option<Ast> {
+    fn parse_expr(&mut self) -> Option<Ast<'b>> {
         self.parse_term()
     }
 
-    fn finish_class(&mut self, tok: Token) -> Option<Ast> {
+    fn finish_class(&mut self, kw: Token) -> Option<Ast<'b>> {
         let Some(name) = self.accept(TokenKind::Ident) else {
             error!(self, &self.token, "expected name for class");
             return None
@@ -73,7 +104,7 @@ impl<'a> Parser<'a> {
             return None
         };
 
-        let mut decls = Vec::new();
+        let mut decls = self.begin_list();
 
         self.skip_newlines();
         while self.accept(TokenKind::BraceClose).is_none() {
@@ -92,10 +123,10 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         };
 
-        Some(Ast::ClassDecl(name, decls))
+        Some(Ast::ClassDecl(kw, name, self.push_list(decls)))
     }
 
-    fn parse_decl(&mut self) -> Option<Ast> {
+    fn parse_decl(&mut self) -> Option<Ast<'b>> {
         match self.token.kind {
             TokenKind::KeywordClass | TokenKind::KeywordStruct => {
                 let token = self.advance();
@@ -119,10 +150,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse(&mut self) -> Ast {
+    fn parse(&mut self) -> Ast<'b> {
         self.advance();
 
-        let mut decls = Vec::new();
+        let mut decls = self.begin_list();
 
         self.skip_newlines();
         while self.accept(TokenKind::End).is_none() {
@@ -135,18 +166,20 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
 
-        Ast::Root(decls)
+        Ast::Root(self.push_list(decls))
     }
 }
 
-impl<'a> Errors for Parser<'a> {
+impl<'a, 'b> Errors for Parser<'a, 'b> {
     fn push(&self, int_loc: &InternalLocation, loc: &dyn Locatable, message: String, context: Vec<String>) {
         self.errors.push(int_loc, loc, message, context);
     }
 }
 
-pub fn parse(errors: &dyn Errors, tokens: impl Iterator<Item = Token>) -> Ast {
-    let mut tokens = tokens;
-    let mut parser = Parser::new(errors, &mut tokens);
-    parser.parse()
+pub fn parse(errors: &dyn Errors, tokens: impl Iterator<Item = Token>) -> AstRoot {
+    AstRoot::new(|bump| {
+        let mut tokens = tokens;
+        let mut parser = Parser::new(errors, &mut tokens, &bump);
+        parser.parse()
+    })
 }

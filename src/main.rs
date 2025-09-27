@@ -12,7 +12,7 @@ fn main_safe(compiler: &Compiler) {
 
     let tokens = front::tokenize(compiler, file.file(), file.data());
     let root = front::parse(compiler, tokens);
-    println!("{:#?}", root);
+    println!("{:#?}", root.root());
 }
 
 fn main() {

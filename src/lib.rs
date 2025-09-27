@@ -24,3 +24,4 @@ pub use compiler::{Compiler, SourceSpan, SourceFile};
 
 pub mod ast;
 pub mod front;
+mod dump;

@@ -1,3 +1,6 @@
+use bumpalo::Bump;
+use self_cell::self_cell;
+
 use crate::*;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -47,17 +50,42 @@ pub enum BinaryOp {
 }
 
 #[derive(Clone, Debug)]
-pub enum Ast {
+pub enum Ast<'a> {
     Error(Token),
-    Root(Vec<Ast>),
-    ClassDecl(Token, Vec<Ast>),
+    Root(&'a [Ast<'a>]),
+    ClassDecl(Token, Token, &'a [Ast<'a>]),
     Name(Token),
-    Binop(Token, Box<Ast>, Box<Ast>),
+    Binop(Token, &'a Ast<'a>, &'a Ast<'a>),
 }
 
-impl Ast {
-    pub fn error(token: Token) -> Ast {
+impl Ast<'_> {
+    pub fn error(token: Token) -> Ast<'static> {
         Ast::Error(token)
+    }
+}
+
+self_cell!(
+    struct AstCell {
+        owner: Bump,
+        #[covariant]
+        dependent: Ast,
+    }
+
+    impl { Debug }
+);
+
+pub struct AstRoot {
+    cell: AstCell,
+}
+
+impl AstRoot {
+    pub fn new<F: FnOnce(&Bump) -> Ast>(f: F) -> AstRoot {
+        let bump = Bump::new();
+        AstRoot { cell: AstCell::new(bump, f) }
+    }
+
+    pub fn root<'a>(&'a self) -> Ast<'a> {
+        self.cell.borrow_dependent().clone()
     }
 }
 

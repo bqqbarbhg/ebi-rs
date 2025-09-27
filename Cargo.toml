@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bumpalo = "3.19.0"
 dashmap = "6.1.0"
 memchr = "2.7.6"
 parking_lot = "0.12.4"
+self_cell = "1.2.0"

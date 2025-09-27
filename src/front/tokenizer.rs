@@ -1,13 +1,11 @@
 use std::str::{CharIndices, SplitInclusive};
 
-use crate::errors::*;
-use crate::front::*;
+use crate::{ast::*, *};
 
-struct Tokenizer<'a> {
+pub struct Tokenizer<'a> {
     source: &'a [u8],
     pos: usize,
     file: SourceFile,
-    line_breaks: Vec<usize>,
     errors: &'a dyn Errors,
 }
 
@@ -35,7 +33,6 @@ impl<'a> Tokenizer<'a> {
             source,
             pos: 0,
             file,
-            line_breaks: Vec::new(),
             errors,
         }
     }
@@ -51,7 +48,6 @@ impl<'a> Tokenizer<'a> {
 
             if pos + 2 <= src.len() && src[pos] == b'/' && src[pos + 1] == b'/' {
                 if let Some(p) = memchr::memchr(b'\n', &src[pos..]) {
-                    self.line_breaks.push(p + 1);
                     pos = p + 1;
                 } else {
                     pos = src.len();
@@ -67,17 +63,24 @@ impl<'a> Tokenizer<'a> {
 
     fn finish_ident(&mut self) -> (usize, TokenKind) {
         let src = self.source;
-        let mut pos = self.pos;
+        let begin = self.pos;
+        let mut pos = begin;
         loop {
             let cur = if pos < src.len() { src[pos] } else { b'\0' };
-            if matches!(cur, b'a'..b'z' | b'A'..b'Z' | b'0'..b'9' | b'_') {
+            if matches!(cur, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
                 pos += 1;
             } else {
                 break;
             }
         }
 
-        (pos - self.pos, TokenKind::Ident)
+        let kind = match &src[begin..pos] {
+            b"class" => TokenKind::KeywordClass,
+            b"struct" => TokenKind::KeywordStruct,
+            _ => TokenKind::Ident,
+        };
+
+        (pos - begin, kind)
     }
 
     fn finish_number(&mut self) -> (usize, TokenKind) {
@@ -85,7 +88,6 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn finish_newline(&mut self) -> (usize, TokenKind) {
-        self.line_breaks.push(self.pos + 1);
         (1, TokenKind::Newline)
     }
 
@@ -96,8 +98,8 @@ impl<'a> Tokenizer<'a> {
         let cur = if pos < src.len() { src[pos] } else { b'\0' };
         let next = if pos + 1 < src.len() { src[pos + 1] } else { b'\0' };
         let (len, kind) = match cur {
-            b'a'..b'z' | b'A'..b'Z' | b'_' => self.finish_ident(),
-            b'0'..b'9' => self.finish_number(),
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.finish_ident(),
+            b'0'..=b'9' => self.finish_number(),
             b'\n' => self.finish_newline(),
             b'=' => match next {
                 b'=' => (2, TokenKind::Equals),
@@ -111,7 +113,9 @@ impl<'a> Tokenizer<'a> {
                 b'=' => (2, TokenKind::LessEquals),
                 _ => (1, TokenKind::Less),
             },
-            b'\0' => (0, TokenKind::End),
+            b'{' => (1, TokenKind::BraceOpen),
+            b'}' => (1, TokenKind::BraceClose),
+            b'+' => (1, TokenKind::Add),
             _ => return None,
         };
 
@@ -125,7 +129,7 @@ impl<'a> Tokenizer<'a> {
             0x20..0x7e => format!("'{}'", ch as char),
             _ => format!("(byte 0x{:02x})", ch),
         };
-        error!(self, loc, "unrecognized token: {}", ch_str);
+        error!(self, &loc, "unrecognized token: {}", ch_str);
 
         let begin = self.pos;
         loop {
@@ -139,8 +143,12 @@ impl<'a> Tokenizer<'a> {
         (self.pos - begin, TokenKind::Error)
     }
 
-    fn scan(&mut self) -> Token {
+    fn scan(&mut self) -> Option<Token> {
         self.skip_whitespace();
+
+        if self.pos >= self.source.len() {
+            return None;
+        }
 
         let begin = self.pos;
         let (len, kind) = match self.read_token() {
@@ -153,7 +161,7 @@ impl<'a> Tokenizer<'a> {
 
         self.pos = end;
 
-        Token { kind, span }
+        Some(Token { kind, span })
     }
 }
 
@@ -163,16 +171,14 @@ impl<'a> Errors for Tokenizer<'a> {
     }
 }
 
-pub fn tokenize(errors: &dyn Errors, file: SourceFile, source: &[u8]) -> Vec<Token> {
-    let mut tokenizer = Tokenizer::new(errors, file, source);
-    let mut result = Vec::new();
-    loop {
-        let token = tokenizer.scan();
-        let end = token.kind == TokenKind::End;
-        result.push(token);
-        if end {
-            break;
-        }
+impl<'a> Iterator for Tokenizer<'a> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.scan()
     }
-    result
+}
+
+pub fn tokenize<'a>(errors: &'a dyn Errors, file: SourceFile, source: &'a [u8]) -> Tokenizer<'a> {
+    Tokenizer::new(errors, file, source)
 }
